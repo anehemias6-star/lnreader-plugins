@@ -31,7 +31,6 @@ class DevilNovelsPlugin implements Plugin.PluginBase {
     pageNo: number,
     { showLatestNovels }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
-    // El listado tiene todas las novelas en una sola página sin paginación
     if (pageNo > 1) return [];
 
     const url = `${this.site}/listado-de-novelas/`;
@@ -41,36 +40,17 @@ class DevilNovelsPlugin implements Plugin.PluginBase {
 
     const novels: Plugin.NovelItem[] = [];
 
-    // Cada novela está en un div con clase "novel-item" o similar con un link y portada
-    $('a[href*="devilnovels.com/"]').each((_i, el) => {
-      const href = $(el).attr('href') || '';
+    $('.pvc-featured-page-item').each((_i, el) => {
+      const titleEl = $(el).find('.pvc-page-title a').first();
+      const name = titleEl.text().trim();
+      const href = titleEl.attr('href') || '';
       const img = $(el).find('img').first();
-      const name =
-        img.attr('alt') ||
-        $(el).find('h2, h3, .novel-title, .title').first().text().trim() ||
-        $(el).attr('title') ||
-        '';
+      const cover = img.attr('src') || defaultCover;
 
       if (!name || !href) return;
 
-      // Filtrar links que no sean de novelas
       try {
-        const urlObj = new URL(href);
-        const path = urlObj.pathname;
-        // Excluir paths que no sean de novelas
-        if (
-          path === '/' ||
-          path.includes('/listado') ||
-          path.includes('/wp-') ||
-          path.includes('/page/') ||
-          path.includes('/categoria/') ||
-          path.includes('/tag/') ||
-          !path.match(/^\/[a-z0-9-]+\/$/)
-        )
-          return;
-
-        const cover = img.attr('data-src') || img.attr('src') || defaultCover;
-
+        const path = new URL(href).pathname;
         novels.push({ name, path, cover });
       } catch {
         return;
@@ -79,7 +59,6 @@ class DevilNovelsPlugin implements Plugin.PluginBase {
 
     return novels;
   }
-
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const url = this.site + novelPath;
     const result = await fetchApi(url);
@@ -218,37 +197,10 @@ class DevilNovelsPlugin implements Plugin.PluginBase {
     searchTerm: string,
     pageNo: number,
   ): Promise<Plugin.NovelItem[]> {
-    // Búsqueda usando el buscador del sitio
-    const url = `${this.site}/?s=${encodeURIComponent(searchTerm)}`;
-    const result = await fetchApi(url);
-    const body = await result.text();
-    const $ = loadCheerio(body);
-
-    const novels: Plugin.NovelItem[] = [];
-
-    $('a[href*="devilnovels.com/"]').each((_i, el) => {
-      const href = $(el).attr('href') || '';
-      const img = $(el).find('img').first();
-      const name =
-        img.attr('alt') ||
-        $(el).find('h2, h3, .novel-title').first().text().trim() ||
-        '';
-
-      if (!name || !href) return;
-
-      try {
-        const urlObj = new URL(href);
-        const path = urlObj.pathname;
-        if (!path.match(/^\/[a-z0-9-]+\/$/)) return;
-
-        const cover = img.attr('data-src') || img.attr('src') || defaultCover;
-        novels.push({ name, path, cover });
-      } catch {
-        return;
-      }
-    });
-
-    return novels;
+    // El sitio filtra en frontend, cargamos listado y filtramos localmente
+    const allNovels = await this.popularNovels(1, { showLatestNovels: false });
+    const term = searchTerm.toLowerCase().trim();
+    return allNovels.filter(novel => novel.name.toLowerCase().includes(term));
   }
 
   resolveUrl = (path: string, _isNovel?: boolean) => this.site + path;
