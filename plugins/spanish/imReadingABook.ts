@@ -3,6 +3,7 @@ import { Plugin } from '@/types/plugin';
 import { load as loadCheerio } from 'cheerio';
 import { NovelStatus } from '@libs/novelStatus';
 import { defaultCover } from '@libs/defaultCover';
+import { Filters } from '@libs/filterInputs';
 
 /**
  * Plugin para I'm Reading A Book (imreadingabook.com)
@@ -28,7 +29,7 @@ class ImReadingABookPlugin implements Plugin.PluginBase {
   icon = 'src/es/imreadingabook/icon.png';
   site = 'https://www.imreadingabook.com';
   version = '1.0.0';
-  filters = undefined;
+  filters: Filters | undefined = undefined;
 
   /**
    * popularNovels: parsea la página /nuestros-proyectos/ que tiene el listado
@@ -200,32 +201,45 @@ class ImReadingABookPlugin implements Plugin.PluginBase {
     // Buscamos texto "Estado:" para determinar el estado de la novela
     const fullText = content.text();
 
-    // Estado
-    const estadoMatch = fullText.match(
-      /Estado\s*:\s*(Activa|Finaliz[ao]da|Hiatus|En\s*proceso)/i,
-    );
-    if (estadoMatch) {
-      const estado = estadoMatch[1].toLowerCase();
-      if (estado.includes('finaliz')) {
-        novel.status = NovelStatus.Completed;
-      } else if (estado === 'activa' || estado.includes('proceso')) {
-        novel.status = NovelStatus.Ongoing;
-      } else if (estado === 'hiatus') {
-        novel.status = NovelStatus.OnHiatus;
+    // Estado: está en un <p> que empieza con "Estado:"
+    content.find('p').each((_i, el) => {
+      const text = $(el).text().trim();
+
+      if (text.toLowerCase().startsWith('estado:')) {
+        const estado = text.toLowerCase();
+        if (estado.includes('finaliz') || estado.includes('terminad')) {
+          novel.status = NovelStatus.Completed;
+        } else if (estado.includes('activa') || estado.includes('proceso')) {
+          novel.status = NovelStatus.Ongoing;
+        } else if (estado.includes('hiatus') || estado.includes('pausa')) {
+          novel.status = NovelStatus.OnHiatus;
+        }
       }
-    }
+    });
 
-    // Sinopsis: buscamos el párrafo después de "Sinopsis:"
-    const sinopsisMatch = fullText.match(
-      /Sinopsis\s*:([\s\S]*?)(?=\||\n\n\n|$)/i,
-    );
-    if (sinopsisMatch) {
-      novel.summary = sinopsisMatch[1]
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 2000); // limitar largo
-    }
-
+    // Sinopsis: el <p> que dice "Sinopsis" seguido de los párrafos del texto
+    let inSinopsis = false;
+    const sinopsisPartes: string[] = [];
+    content.find('p').each((_i, el) => {
+      const text = $(el).text().trim();
+      if (text.toLowerCase() === 'sinopsis') {
+        inSinopsis = true;
+        return;
+      }
+      if (inSinopsis) {
+        // Parar en separadores decorativos o metadatos
+        if (
+          text.startsWith('•') ||
+          text.startsWith('━') ||
+          text.toLowerCase().startsWith('buscando')
+        ) {
+          inSinopsis = false;
+          return;
+        }
+        if (text.length > 10) sinopsisPartes.push(text);
+      }
+    });
+    novel.summary = sinopsisPartes.join('\n\n').substring(0, 2000);
     // Géneros: las categorías del post están en el header del artículo
     // Ejemplo: "/ Acción, Aventura, Comedia, Drama, Fantasía, Romántico /"
     const categories: string[] = [];
@@ -255,41 +269,45 @@ class ImReadingABookPlugin implements Plugin.PluginBase {
      *   | 01 | 02 | 03 |
      *   | 04 | 05 | 06 |
      */
-    content.find('table td a').each((i, el) => {
-      const chapterHref = $(el).attr('href') || '';
-      const chapterName = $(el).text().trim();
+    let chapterIndex = 0;
+    content.find('table tr').each((_rowI, row) => {
+      const cells = $(row).find('td');
+      // Si ninguna celda tiene link, saltamos la fila
+      if (!cells.find('a').length) return;
 
-      if (!chapterHref || !chapterName) return;
+      const rowNum = ++chapterIndex;
 
-      // Solo capítulos del mismo dominio
-      if (
-        !chapterHref.startsWith('https://imreadingabook.com') &&
-        !chapterHref.startsWith('https://www.imreadingabook.com')
-      ) {
-        return;
-      }
+      cells.each((_colI, cell) => {
+        const link = $(cell).find('a').first();
+        const chapterHref = link.attr('href') || '';
+        const partName = link.text().trim();
 
-      let chapterPath: string;
-      try {
-        chapterPath = new URL(chapterHref).pathname;
-      } catch {
-        return;
-      }
+        if (!chapterHref || !partName) return;
 
-      // Intentar extraer número de capítulo del texto
-      const numMatch = chapterName.match(/\d+/);
-      const chapterNumber = numMatch ? parseInt(numMatch[0], 10) : i + 1;
+        if (
+          !chapterHref.startsWith('https://imreadingabook.com') &&
+          !chapterHref.startsWith('https://www.imreadingabook.com')
+        )
+          return;
 
-      chapters.push({
-        name: chapterName,
-        path: chapterPath,
-        releaseTime: null,
-        chapterNumber,
+        let chapterPath: string;
+        try {
+          chapterPath = new URL(chapterHref).pathname;
+        } catch {
+          return;
+        }
+
+        // Nombre completo: "Capítulo 1 - Parte I."
+        const chapterName = `Capítulo ${rowNum} - ${partName}`;
+
+        chapters.push({
+          name: chapterName,
+          path: chapterPath,
+          releaseTime: null,
+          chapterNumber: parseFloat(`${rowNum}`),
+        });
       });
     });
-
-    // Ordenar por número de capítulo (ascendente)
-    chapters.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
 
     novel.chapters = chapters;
     return novel;
